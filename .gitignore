@@ -1,0 +1,29 @@
+# Airflow - Fichiers locaux et logs
+/logs/
+/plugins/
+airflow.cfg
+airflow.db
+webserver_config.py
+.env
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Python (Fichiers temporaires de compilation)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Système & IDE
+.SSH/
+.secrets/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
