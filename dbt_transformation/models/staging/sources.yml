@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: snowflake_raw
+    database: RAW
+    schema: SOURCES
+    tables:
+      - name: company_raw
+      - name: job_postings_raw
+      - name: skills_raw
+      - name: skills_jobs_raw
