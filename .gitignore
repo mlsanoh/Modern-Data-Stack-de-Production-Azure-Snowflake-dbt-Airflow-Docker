@@ -27,3 +27,9 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# dbt - Dossiers générés automatiquement à ignorer absolument
+target/
+dbt_packages/
+dbt_modules/
+logs/
