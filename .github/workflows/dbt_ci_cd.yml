@@ -1,0 +1,33 @@
+name: dbt_pipeline
+
+on:
+  push:
+    branches: [ "master" ]
+
+jobs:
+  run_dbt_pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Recuperer le code du repo
+        uses: actions/checkout@v4
+
+      - name: 2. Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. Installer dbt et l'adaptateur Snowflake
+        run: |
+          pip install --upgrade pip
+          pip install dbt-snowflake
+
+      - name: 4. Executer le dbt build (Run + Test)
+        env:
+          DBT_ENV_SECRET_ACCOUNT: ${{ secrets.DBT_ENV_SECRET_ACCOUNT }}
+          DBT_ENV_SECRET_USER: ${{ secrets.DBT_ENV_SECRET_USER }}
+          DBT_ENV_SECRET_PASSWORD: ${{ secrets.DBT_ENV_SECRET_PASSWORD }}
+        run: |
+          cd dbt_transformation
+          dbt deps
+          dbt build --target dev
