@@ -30,4 +30,4 @@ jobs:
         run: |
           cd dbt_transformation
           dbt deps
-          dbt build --target dev
+          dbt build --target dev --profiles-dir .
