@@ -81,4 +81,13 @@ Le projet d'analyse dbt structure la donnée selon le framework classique :
 
 3. **Mart (``fact_ / dim_``) :** Tables de faits et dimensions prêtes à être consommées par un outil de Dataviz (PowerBI / Tableau).
 
+4. **dbt Snapshots & Seeds - SCD Type 2 :**
+Afin de suivre l'évolution des niveaux de priorité des offres d'emploi dans le temps, le projet implémente une stratégie de **Slowly Changing Dimensions (SCD Type 2)**.
+
+    -   **Référentiel Local (dbt Seeds) :** Création d'un fichier de mapping statique `priority_roles.csv` stocké directement dans le dossier `seeds/` du projet. Ce fichier liste les rôles cibles (`Data Engineer`, `Data Scientist`, etc.) et leur attribue un niveau de priorité (`priority_lvl`). Il est converti automatiquement en table de référence dans le Data Warehouse via la commande `dbt seed`.
+    -  **Requête de Snapshot Enrichie (`priority_jobs_snapshot`) :** Construction d'une vue consolidée combinant nos tables de staging (`stg_job_postings`, `stg_company`) et notre table de référence seed via des jointures SQL complexes (`LEFT` et `INNER JOIN`).
+    -  **Détection des Changements (`strategy='check'`) :** Configuration du snapshot dbt pour surveiller spécifiquement la colonne `priority_lvl`. Si le niveau de priorité d'un métier est modifié, dbt ferme automatiquement l'ancien enregistrement (`dbt_valid_to`) et en crée un nouveau (`dbt_valid_from`).
+
+Cette architecture garantit la traçabilité complète des KPIs et permet aux analystes BI de reconstruire fidèlement l'état du marché de l'emploi à n'importe quelle date passée.
+
 Chaque modèle est soumis à des tests stricts définis dans les fichiers de schéma .yml pour bloquer toute régression de donnée.
