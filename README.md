@@ -40,7 +40,7 @@ Le projet analyse un jeu de données du marché de l'emploi (offres, entreprises
 - **Tables de faits complémentaires** : `fact_job_skills_flat` (vue à plat offres/compétences/entreprises) et `fact_skill_demand_month` (demande de compétences par mois et par intitulé de poste).
 - **Suivi historique SCD Type 2** : `dbt seed` (`priority_roles.csv`) combiné à un `dbt snapshot` (`priority_jobs_snapshot`, stratégie `check` sur la colonne `priority_lvl`) pour tracer dans le temps l'évolution du niveau de priorité des métiers.
 - **Tests de qualité de données** : tests génériques (`unique`, `not_null`) sur les clés des modèles de staging, et un test métier singulier (`data_valid_jobs.sql`) rejetant les salaires négatifs ou nuls et les dates de publication futures.
-- **Intégration continue (CI)** : pipeline GitHub Actions déclenché à chaque `push` sur `master`, qui installe `dbt-snowflake`, vérifie la connexion Snowflake (`dbt debug`) et exécute l'ensemble des modèles/tests (`dbt build`).
+- **Intégration continue (CI)** : pipeline GitHub Actions déclenché sur les pull requests et les `push` sur `master`, qui installe `dbt-snowflake`, vérifie la connexion Snowflake (`dbt debug`) et exécute l'ensemble des modèles/tests (`dbt build`).
 
 ---
 
@@ -49,11 +49,11 @@ Le projet analyse un jeu de données du marché de l'emploi (offres, entreprises
 | Technologie | Version / Détail | Rôle dans le projet |
 |---|---|---|
 | **Apache Airflow** | `2.9.2` (image `apache/airflow:2.9.2-python3.11`) | Orchestration du DAG d'ingestion (planification, monitoring, retries) |
-| **apache-airflow-providers-snowflake** | `>=5.7.0` | Fournit le `SnowflakeOperator` utilisé par le DAG |
+| **apache-airflow-providers-snowflake** | `5.7.0` | Fournit le `SQLExecuteQueryOperator` utilisé par le DAG |
 | **Docker / Docker Compose** | — | Conteneurisation de la stack Airflow (webserver, scheduler, init) |
 | **PostgreSQL** | `13` | Base de métadonnées d'Airflow (`AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`) |
 | **Snowflake** | Cloud Data Warehouse | Stockage RAW, transformation et couches analytiques (staging/marts) |
-| **dbt (dbt-snowflake)** | Installé via CI (`pip install dbt-snowflake`) | Transformation SQL, tests de données, seeds, snapshots |
+| **dbt (dbt-snowflake)** | Installé via CI (`pip install -r requirements-dbt.txt`) | Transformation SQL, tests de données, seeds, snapshots |
 | **Azure Blob Storage** | Storage Integration Snowflake | Data Lake source (zone d'atterrissage des fichiers CSV) |
 | **GitHub Actions** | `ubuntu-latest`, Python `3.10` | CI/CD : validation et exécution automatique du projet dbt |
 
@@ -88,7 +88,7 @@ Flux ELT complet, du fichier source jusqu'aux tables analytiques :
 - Un **compte Snowflake actif** avec un rôle disposant des privilèges `ACCOUNTADMIN` (setup initial) et un utilisateur dédié
 - Un **compte de stockage Azure Blob Storage** avec un container accessible (le projet référence `stglobaljobmarket` / `global-job-market-lake`)
 - **Python 3.10+** (si exécution de dbt en local, hors Docker)
-- **dbt-snowflake** (`pip install dbt-snowflake`) pour exécuter les commandes dbt en local
+- **dbt-snowflake** (`pip install -r requirements-dbt.txt`) pour exécuter les commandes dbt en local
 - Accès en écriture à Azure Active Directory pour autoriser l'application Snowflake (consentement de la Storage Integration)
 
 ---
@@ -122,8 +122,8 @@ GRANT OPERATE ON WAREHOUSE COMPUTE_WH TO ROLE COMPUTE_ROLE;
 -- Bases de données
 CREATE DATABASE IF NOT EXISTS RAW;         -- Ingestion Airflow/Azure
 CREATE DATABASE IF NOT EXISTS ANALYTICS;   -- Sortie dbt
-GRANT ALL PRIVILEGES ON DATABASE RAW TO ROLE COMPUTE_ROLE;
-GRANT ALL PRIVILEGES ON DATABASE ANALYTICS TO ROLE COMPUTE_ROLE;
+GRANT USAGE, CREATE SCHEMA ON DATABASE RAW TO ROLE COMPUTE_ROLE;
+-- Les droits dbt sur ANALYTICS sont accordés via sql/runtime_roles.sql.
 
 -- Attribution du rôle à l'utilisateur
 GRANT ROLE COMPUTE_ROLE TO USER <VOTRE_UTILISATEUR>;
@@ -134,7 +134,7 @@ USE DATABASE RAW;
 CREATE SCHEMA IF NOT EXISTS SOURCES;
 
 GRANT USAGE, CREATE TABLE ON SCHEMA RAW.SOURCES TO ROLE COMPUTE_ROLE;
-GRANT USAGE, CREATE TABLE ON FUTURE SCHEMAS IN DATABASE RAW TO ROLE COMPUTE_ROLE;
+-- Pas de privilèges globaux sur les futurs schémas.
 
 -- Tables brutes
 CREATE OR REPLACE TABLE RAW.SOURCES.JOB_POSTINGS_RAW (
@@ -182,7 +182,8 @@ GRANT USAGE ON INTEGRATION AZURE_JOBS_INT TO ROLE COMPUTE_ROLE;
 -- l'application Snowflake dans Azure Active Directory (rôle "Storage Blob Data Reader")
 DESC STORAGE INTEGRATION AZURE_JOBS_INT;
 
--- Création du stage externe
+-- Création du stage externe par le rôle de provisionnement
+USE ROLE COMPUTE_ROLE;
 CREATE OR REPLACE STAGE RAW.SOURCES.AZURE_JOBS_STAGE
     URL = 'azure://<compte>.blob.core.windows.net/<container>/'
     STORAGE_INTEGRATION = AZURE_JOBS_INT
@@ -194,15 +195,23 @@ LIST @RAW.SOURCES.AZURE_JOBS_STAGE;
 
 > Après `DESC STORAGE INTEGRATION`, un consentement doit être donné côté **Azure Active Directory** (attribution du rôle `Storage Blob Data Reader` à l'application multi-tenant Snowflake sur le compte de stockage) pour que le `STAGE` puisse lire les fichiers.
 
+Après le setup, exécuter `sql/runtime_roles.sql` avec un administrateur et deux
+utilisateurs dédiés (remplacer les placeholders). Le compte dbt utilise
+`DBT_TRANSFORMER` et écrit dans `ANALYTICS` ; Airflow utilise `AIRFLOW_INGESTOR` pour
+charger les quatre tables RAW. Les rôles administratifs restent réservés au setup.
+Si les utilisateurs existaient avec `ACCOUNTADMIN` ou `COMPUTE_ROLE`, retirer ces
+anciens rôles après vérification des droits. La configuration ne les révoque pas automatiquement.
+
 ### 3. Lancer l'environnement d'orchestration (Airflow via Docker)
 
 ```bash
-docker-compose up -d
+docker compose build
+docker compose up -d
 ```
 
 Accédez à l'interface Airflow sur `http://localhost:8080` (identifiants créés à l'initialisation : `admin` / `admin`).
 
-Dans **Admin → Connections**, créez la connexion `snowflake_conn` (type *Snowflake*) utilisée par le DAG, avec le compte, l'utilisateur, le mot de passe, le rôle `COMPUTE_ROLE` et le warehouse `COMPUTE_WH`.
+Dans **Admin → Connections**, créez la connexion `snowflake_conn` (type *Snowflake*) utilisée par le DAG, avec le compte, l'utilisateur, le mot de passe, le rôle `AIRFLOW_INGESTOR` et le warehouse `COMPUTE_WH`.
 
 ### 4. Déclencher le DAG d'ingestion
 
@@ -239,7 +248,7 @@ dbt build --target dev # exécute modèles + tests
 | `DBT_ENV_SECRET_PASSWORD` | Mot de passe de l'utilisateur Snowflake | ✅ Oui | — |
 | `AIRFLOW_UID` | UID système utilisé par les conteneurs Airflow pour la gestion des permissions sur les volumes montés | ❌ Non | `50000` |
 
-> La connexion Airflow vers Snowflake (`snowflake_conn`, utilisée par le `SnowflakeOperator` dans le DAG) n'est **pas** une variable d'environnement : elle se configure via l'UI Airflow (**Admin → Connections**) ou la CLI `airflow connections add`. Aucun fichier `.env` d'exemple n'est fourni dans le dépôt.
+> La connexion Airflow vers Snowflake (`snowflake_conn`, utilisée par le `SQLExecuteQueryOperator` dans le DAG) n'est **pas** une variable d'environnement : elle se configure via l'UI Airflow (**Admin → Connections**) ou la CLI `airflow connections add`. Aucun fichier `.env` d'exemple n'est fourni dans le dépôt.
 
 ---
 
@@ -261,7 +270,7 @@ ORDER BY month_start_date DESC;
 
 -- Historique des changements de priorité d'un métier (snapshot SCD2)
 SELECT job_id, job_title_short, priority_lvl, dbt_valid_from, dbt_valid_to
-FROM RAW.PRIORITY_MART.PRIORITY_JOBS_SNAPSHOT
+FROM ANALYTICS.DBT_DEV_SNAPSHOTS.PRIORITY_JOBS_SNAPSHOT
 WHERE job_title_short = 'Data Engineer';
 ```
 
@@ -301,21 +310,21 @@ docker-compose exec airflow-webserver airflow tasks test ingestion_azure_to_snow
 
 ## 🚀 Deployment & CI/CD
 
-Le pipeline d'intégration continue (`.github/workflows/dbt_ci_cd.yml`) se déclenche à chaque `push` sur la branche `master` :
+Le workflow `.github/workflows/dbt_ci_cd.yml` comporte deux jobs :
 
-| Étape | Action |
-|---|---|
-| 1 | Checkout du dépôt (`actions/checkout@v4`) |
-| 2 | Installation de Python `3.10` (`actions/setup-python@v5`) |
-| 3 | Installation de `dbt-snowflake` |
-| 4 | Vérification de la version dbt (`dbt --version`) |
-| 5 | Installation des packages dbt (`dbt deps --profiles-dir .`) |
-| 6 | Vérification de la connexion Snowflake (`dbt debug --target dev`) |
-| 7 | Exécution complète des modèles et tests (`dbt build --target dev`) |
+- **Pull request et push sur master** : validation de la syntaxe Python et `dbt parse`, sans connexion Snowflake, avec des valeurs factices. Les pull requests ne reçoivent aucun secret et n'écrivent aucune table.
+- **Push sur master uniquement** : `dbt debug` puis `dbt build` si les trois secrets Snowflake sont configurés. Sinon, le workflow indique explicitement que cette validation distante a été ignorée.
 
-![Pipeline de CI/CD Vert](images/github_actions_success.jpg)
+Configurer `DBT_ENV_SECRET_ACCOUNT`, `DBT_ENV_SECRET_USER`, `DBT_ENV_SECRET_PASSWORD`
+dans les secrets Actions. Les variables optionnelles `DBT_ROLE`, `DBT_DATABASE` et
+`DBT_SCHEMA` permettent d'adapter la cible (par défaut `DBT_TRANSFORMER`, `ANALYTICS`,
+`DBT_DEV`). Le snapshot est dans `<DBT_SCHEMA>_SNAPSHOTS` de la même base.
 
-Les secrets `DBT_ENV_SECRET_ACCOUNT`, `DBT_ENV_SECRET_USER` et `DBT_ENV_SECRET_PASSWORD` doivent être configurés dans **Settings → Secrets and variables → Actions** du dépôt GitHub.
+Le provider Snowflake et common SQL sont fixés dans `requirements.txt`, dbt dans
+`requirements-dbt.txt`. Le provider est installé lors du build Docker. Les commandes
+COPY échouent sur une ligne invalide (`ABORT_STATEMENT`) plutôt que de laisser passer
+un chargement partiel. Ce portfolio reste une démonstration ; la supervision et une
+politique de rétention doivent être définies pour un déploiement durable.
 
 ---
 
@@ -355,7 +364,7 @@ Les secrets `DBT_ENV_SECRET_ACCOUNT`, `DBT_ENV_SECRET_USER` et `DBT_ENV_SECRET_P
 ## ⚙️ Configuration
 
 - **`dbt_transformation/dbt_project.yml`** : définit les matérialisations par couche (`staging` → `view`, `intermediate` → `ephemeral`, `marts` → `table`) et les schémas cibles (`staging`, `marts`).
-- **`dbt_transformation/profiles.yml`** : profil `dbt_transformation`, cible `dev`, type `snowflake`, rôle `ACCOUNTADMIN`, warehouse `COMPUTE_WH`, base `RAW`, schéma `SOURCES` — toutes les valeurs sensibles (compte, utilisateur, mot de passe) sont injectées via variables d'environnement (`env_var`).
+- **`dbt_transformation/profiles.yml`** : profil `dbt_transformation`, cible `dev`, type `snowflake`, rôle `DBT_TRANSFORMER`, warehouse `COMPUTE_WH`, base `ANALYTICS`, schéma `DBT_DEV` — toutes les valeurs sensibles (compte, utilisateur, mot de passe) sont injectées via variables d'environnement (`env_var`).
 - **`docker-compose.yml`** : `AIRFLOW__CORE__EXECUTOR: LocalExecutor`, base de métadonnées Postgres, DAGs chargés depuis `./dags`, exemples désactivés (`AIRFLOW__CORE__LOAD_EXAMPLES: 'false'`).
 - **Connexion Airflow `snowflake_conn`** : à créer manuellement dans l'UI Airflow (non versionnée, pour des raisons de sécurité).
 
@@ -388,7 +397,8 @@ dbt test
 | `dbt debug` échoue avec une erreur d'authentification | Variables `DBT_ENV_SECRET_*` absentes ou incorrectes | Vérifier que les 3 variables sont bien exportées dans le shell (local) ou définies comme secrets (CI) |
 | Le `STAGE` Azure renvoie 0 fichier (`LIST @...STAGE`) | Consentement Azure AD non accordé à l'application Snowflake | Exécuter `DESC STORAGE INTEGRATION AZURE_JOBS_INT`, récupérer `AZURE_CONSENT_URL`, l'ouvrir et accorder le rôle `Storage Blob Data Reader` sur le compte de stockage |
 | Le DAG Airflow échoue sur `snowflake_conn` | Connexion Airflow non créée ou rôle/warehouse incorrects | Créer/vérifier la connexion `snowflake_conn` dans **Admin → Connections** de l'UI Airflow |
-| `docker-compose up` échoue sur les permissions de volumes (Linux) | `AIRFLOW_UID` non défini | Exécuter `echo -e "AIRFLOW_UID=$(id -u)" > .env` avant `docker-compose up -d` |
+| `docker-compose up` échoue sur les permissions de volumes (Linux) | `AIRFLOW_UID` non défini | Exécuter `echo -e "AIRFLOW_UID=$(id -u)" > .env` avant `docker compose build
+docker compose up -d` |
 | `dbt build` échoue sur le snapshot | Table seed `priority_roles` non chargée | Exécuter `dbt seed` avant `dbt snapshot` |
 
 

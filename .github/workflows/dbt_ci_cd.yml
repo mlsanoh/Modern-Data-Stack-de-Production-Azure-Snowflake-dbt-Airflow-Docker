@@ -2,50 +2,63 @@ name: dbt_pipeline
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
 
 jobs:
-  run_dbt_pipeline:
+  validate:
     runs-on: ubuntu-latest
-
+    env:
+      DBT_ENV_SECRET_ACCOUNT: local_account
+      DBT_ENV_SECRET_USER: local_user
+      DBT_ENV_SECRET_PASSWORD: local_password
     steps:
-      - name: 1. Récupérer le code du dépôt
-        uses: actions/checkout@v4
-
-      - name: 2. Installer Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
+      - name: Installer dbt
+        run: pip install -r requirements-dbt.txt
+      - name: Vérifier la syntaxe Python
+        run: python -m compileall -q dags
+      - name: Valider le projet dbt sans connexion Snowflake
+        working-directory: dbt_transformation
+        run: dbt parse --target dev --profiles-dir . --no-partial-parse
 
-      - name: 3. Installer dbt Snowflake
+  build:
+    needs: validate
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      DBT_ENV_SECRET_ACCOUNT: ${{ secrets.DBT_ENV_SECRET_ACCOUNT }}
+      DBT_ENV_SECRET_USER: ${{ secrets.DBT_ENV_SECRET_USER }}
+      DBT_ENV_SECRET_PASSWORD: ${{ secrets.DBT_ENV_SECRET_PASSWORD }}
+      DBT_ROLE: ${{ vars.DBT_ROLE || 'DBT_TRANSFORMER' }}
+      DBT_DATABASE: ${{ vars.DBT_DATABASE || 'ANALYTICS' }}
+      DBT_SCHEMA: ${{ vars.DBT_SCHEMA || 'DBT_DEV' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Installer dbt
+        run: pip install -r requirements-dbt.txt
+      - name: Vérifier la configuration Snowflake
+        id: credentials
         run: |
-          python -m pip install --upgrade pip
-          pip install dbt-snowflake
-
-      - name: 4. Vérifier l'installation de dbt
-        run: |
-          dbt --version
-
-      - name: 5. Installer les packages dbt
-        working-directory: ./dbt_transformation
-        run: |
-          dbt deps --profiles-dir .
-
-      - name: 6. Vérifier la connexion Snowflake
-        working-directory: ./dbt_transformation
-        env:
-          DBT_ENV_SECRET_ACCOUNT: ${{ secrets.DBT_ENV_SECRET_ACCOUNT }}
-          DBT_ENV_SECRET_USER: ${{ secrets.DBT_ENV_SECRET_USER }}
-          DBT_ENV_SECRET_PASSWORD: ${{ secrets.DBT_ENV_SECRET_PASSWORD }}
+          if [ -n "$DBT_ENV_SECRET_ACCOUNT" ] && [ -n "$DBT_ENV_SECRET_USER" ] && [ -n "$DBT_ENV_SECRET_PASSWORD" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Build Snowflake ignoré : configurer les trois secrets DBT_ENV_SECRET_*."
+          fi
+      - name: Vérifier la connexion et exécuter dbt
+        if: steps.credentials.outputs.configured == 'true'
+        working-directory: dbt_transformation
         run: |
           dbt debug --target dev --profiles-dir .
-
-      - name: 7. Exécuter les modèles dbt
-        working-directory: ./dbt_transformation
-        env:
-          DBT_ENV_SECRET_ACCOUNT: ${{ secrets.DBT_ENV_SECRET_ACCOUNT }}
-          DBT_ENV_SECRET_USER: ${{ secrets.DBT_ENV_SECRET_USER }}
-          DBT_ENV_SECRET_PASSWORD: ${{ secrets.DBT_ENV_SECRET_PASSWORD }}
-        run: |
           dbt build --target dev --profiles-dir .

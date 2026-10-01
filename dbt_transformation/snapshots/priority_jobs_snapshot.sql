@@ -2,8 +2,8 @@
 
 {{
     config(
-      target_database='RAW',
-      target_schema='PRIORITY_MART',
+      target_database=target.database,
+      target_schema=target.schema ~ '_SNAPSHOTS',
       unique_key='job_id',
       strategy='check',
       check_cols=['priority_lvl'],
