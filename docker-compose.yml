@@ -1,6 +1,7 @@
 x-airflow-common: &airflow-common
   # L'image officielle Airflow avec Python 3.11
-  image: apache/airflow:2.9.2-python3.11
+  build: .
+  image: modern-data-stack-airflow:2.9.2
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -9,14 +10,12 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
  
-    # On installera le provider manuellement une fois Airflow démarré.
-    _PIP_ADDITIONAL_REQUIREMENTS: ""
+    # Les providers sont installés lors de la construction de l'image.
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
     - ./config:/opt/airflow/config
-    - ./requirements.txt:/requirements.txt
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
@@ -43,12 +42,22 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     restart: always
 
   # L'interface Web d'Airflow
   airflow-webserver:
     <<: *airflow-common
     command: webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     healthcheck:
