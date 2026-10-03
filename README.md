@@ -40,7 +40,7 @@ Le projet analyse un jeu de données du marché de l'emploi (offres, entreprises
 - **Tables de faits complémentaires** : `fact_job_skills_flat` (vue à plat offres/compétences/entreprises) et `fact_skill_demand_month` (demande de compétences par mois et par intitulé de poste).
 - **Suivi historique SCD Type 2** : `dbt seed` (`priority_roles.csv`) combiné à un `dbt snapshot` (`priority_jobs_snapshot`, stratégie `check` sur la colonne `priority_lvl`) pour tracer dans le temps l'évolution du niveau de priorité des métiers.
 - **Tests de qualité de données** : tests génériques (`unique`, `not_null`) sur les clés des modèles de staging, et un test métier singulier (`data_valid_jobs.sql`) rejetant les salaires négatifs ou nuls et les dates de publication futures.
-- **Intégration continue (CI)** : pipeline GitHub Actions déclenché sur les pull requests et les `push` sur `master`, qui installe `dbt-snowflake`, vérifie la connexion Snowflake (`dbt debug`) et exécute l'ensemble des modèles/tests (`dbt build`).
+- **Intégration continue (CI)** : validation automatique de la syntaxe Python et du projet dbt sur les pull requests et les `push` sur `master`, sans connexion Snowflake. L'exécution des modèles/tests dans Snowflake (`dbt debug` puis `dbt build`) se lance manuellement depuis GitHub Actions.
 
 ---
 
@@ -55,7 +55,7 @@ Le projet analyse un jeu de données du marché de l'emploi (offres, entreprises
 | **Snowflake** | Cloud Data Warehouse | Stockage RAW, transformation et couches analytiques (staging/marts) |
 | **dbt (dbt-snowflake)** | Installé via CI (`pip install -r requirements-dbt.txt`) | Transformation SQL, tests de données, seeds, snapshots |
 | **Azure Blob Storage** | Storage Integration Snowflake | Data Lake source (zone d'atterrissage des fichiers CSV) |
-| **GitHub Actions** | `ubuntu-latest`, Python `3.10` | CI/CD : validation et exécution automatique du projet dbt |
+| **GitHub Actions** | `ubuntu-latest`, Python `3.11` | Validation automatique ; exécution dbt dans Snowflake sur lancement manuel |
 
 
 ---
@@ -312,8 +312,13 @@ docker-compose exec airflow-webserver airflow tasks test ingestion_azure_to_snow
 
 Le workflow `.github/workflows/dbt_ci_cd.yml` comporte deux jobs :
 
-- **Pull request et push sur master** : validation de la syntaxe Python et `dbt parse`, sans connexion Snowflake, avec des valeurs factices. Les pull requests ne reçoivent aucun secret et n'écrivent aucune table.
-- **Push sur master uniquement** : `dbt debug` puis `dbt build` si les trois secrets Snowflake sont configurés. Sinon, le workflow indique explicitement que cette validation distante a été ignorée.
+- **Job `validate`** : validation de la syntaxe Python et `dbt parse`, sans connexion Snowflake, avec des valeurs factices. Il s'exécute sur les pull requests, les push sur `master` et les lancements manuels. Il ne reçoit aucun secret et n'écrit aucune table. Cette validation ne remplace pas les tests de données dans Snowflake.
+- **Job `build`** : `dbt debug` puis `dbt build`, uniquement lors d'un lancement manuel (`workflow_dispatch`), après réussite de `validate`. Il nécessite un compte Snowflake actif et les trois secrets de connexion. Si un secret manque, le job échoue avec un message explicite.
+
+Pour lancer l'exécution Snowflake, ouvrir **Actions → dbt_pipeline → Run workflow**,
+choisir la branche `master`, puis cliquer sur **Run workflow**. Le bouton devient
+disponible une fois le workflow avec `workflow_dispatch` intégré à la branche principale.
+Un push ou une fusion ne déclenche plus de connexion Snowflake.
 
 Configurer `DBT_ENV_SECRET_ACCOUNT`, `DBT_ENV_SECRET_USER`, `DBT_ENV_SECRET_PASSWORD`
 dans les secrets Actions. Les variables optionnelles `DBT_ROLE`, `DBT_DATABASE` et
@@ -400,5 +405,4 @@ dbt test
 | `docker-compose up` échoue sur les permissions de volumes (Linux) | `AIRFLOW_UID` non défini | Exécuter `echo -e "AIRFLOW_UID=$(id -u)" > .env` avant `docker compose build
 docker compose up -d` |
 | `dbt build` échoue sur le snapshot | Table seed `priority_roles` non chargée | Exécuter `dbt seed` avant `dbt snapshot` |
-
 

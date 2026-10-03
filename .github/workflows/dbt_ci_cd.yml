@@ -5,6 +5,7 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,7 +32,8 @@ jobs:
 
   build:
     needs: validate
-    if: github.event_name == 'push'
+    # La connexion Snowflake est réservée aux lancements manuels.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       DBT_ENV_SECRET_ACCOUNT: ${{ secrets.DBT_ENV_SECRET_ACCOUNT }}
@@ -48,16 +50,12 @@ jobs:
       - name: Installer dbt
         run: pip install -r requirements-dbt.txt
       - name: Vérifier la configuration Snowflake
-        id: credentials
         run: |
-          if [ -n "$DBT_ENV_SECRET_ACCOUNT" ] && [ -n "$DBT_ENV_SECRET_USER" ] && [ -n "$DBT_ENV_SECRET_PASSWORD" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Build Snowflake ignoré : configurer les trois secrets DBT_ENV_SECRET_*."
+          if [ -z "$DBT_ENV_SECRET_ACCOUNT" ] || [ -z "$DBT_ENV_SECRET_USER" ] || [ -z "$DBT_ENV_SECRET_PASSWORD" ]; then
+            echo "::error::Configurer les trois secrets DBT_ENV_SECRET_* avant de lancer le build Snowflake."
+            exit 1
           fi
       - name: Vérifier la connexion et exécuter dbt
-        if: steps.credentials.outputs.configured == 'true'
         working-directory: dbt_transformation
         run: |
           dbt debug --target dev --profiles-dir .
